@@ -259,9 +259,90 @@ public class Main {
 
 **handler这个类实现InvocationHandler接口，实现invoke方法，这里面决定了方法执行前后执行的代码。**
 
+### 原理：
+
+1.实现InvokeHandler接口，重写invoke方法，可自由定义方法前后执行
+
+2.生成代理类Proxy.newProxyInstance，生成的代理类，相当于重写了所有方法，并提前反射维持了方法的引用(提升反射速度)。
+
+3.所有方法的执行，都改成执行invoke方法。
+
+```
+ public final void startLove() throws  {
+        try {
+            super.h.invoke(this, m4, (Object[])null);
+        } catch (RuntimeException | Error var2) {
+            throw var2;
+        } catch (Throwable var3) {
+            throw new UndeclaredThrowableException(var3);
+        }
+    }
+
+    public final int hashCode() throws  {
+        try {
+            return (Integer)super.h.invoke(this, m0, (Object[])null);
+        } catch (RuntimeException | Error var2) {
+            throw var2;
+        } catch (Throwable var3) {
+            throw new UndeclaredThrowableException(var3);
+        }
+    }
+
+    static {
+        try {
+            m1 = Class.forName("java.lang.Object").getMethod("equals", Class.forName("java.lang.Object"));
+            m3 = Class.forName("com.ourgut.design.pattern.common.IPerson").getMethod("findLove");
+            m2 = Class.forName("java.lang.Object").getMethod("toString");
+            m4 = Class.forName("com.ourgut.design.pattern.common.IPerson").getMethod("startLove");
+            m0 = Class.forName("java.lang.Object").getMethod("hashCode");
+        } catch (NoSuchMethodException var2) {
+            throw new NoSuchMethodError(var2.getMessage());
+        } catch (ClassNotFoundException var3) {
+            throw new NoClassDefFoundError(var3.getMessage());
+        }
+    }
+```
+
+
+
 ### cglib:
 
 cglib动态代理是对代理对象类的class文件加载进来，通过修改其字节码生成子类来处理。CGLIB是针对类实现代理，主要是对指定的类生成一个子类，覆盖其中的方法,因为是继承，所以该类或方法最好不要声明成final .
+
+### 原理：
+
+1.实现MethodInterceptor接口，重写intercept方法(和invoke类似，写前置后置)。
+
+2.生成代理类，编译后会生成三个类，CGLib动态代理使用ASM框架写Class字节码。CGLib动态代理实现更复杂，生成代理类效率低(编译期效率低)。
+
+3.执行效率高，
+
+```
+查看源码可以发现生成了三个class文件，新生成的类，重写了Customer所有方法。(一个是代理类，另外两个是被代理类和代理类的FastClass类)
+CGLib动态代理执行代理方法的效率之所以比JDK高，是因为CGlib采用了FastClass机制，它的原理简单来说就是：为代理类和被代理类各生成一个fastclass类，这个类会为代理类或被代理类的方法分配一个index（int类型）；这个index被当作一个入参，FastClass可以直接定位要调用的方法并直接进行调用，省去了反射调用，因此调用效率比JDK代理通过反射调用高。(简单来说，实现了FisrtClass，可以定位到要调用的方法，比反射快)
+
+	/**
+	 * 几乎和JDK动态代理一样，也是生成一个代理类
+	 * @param clazz
+	 * @return
+	 * @throws Exception
+	 */
+	public Object getInstance(Class<?> clazz) throws Exception{
+		//相当于JDK中的Proxy类，是完成代理的工具类
+		Enhancer enhancer = new Enhancer();
+		enhancer.setSuperclass(clazz);
+		enhancer.setCallback(this);
+		return enhancer.create();
+	}
+
+	@Override
+	public Object intercept(Object o, Method method, Object[] objects, MethodProxy methodProxy) throws Throwable {
+		before();
+		Object obj = methodProxy.invokeSuper(o,objects);
+		after();
+		return obj;
+	}
+```
 
 
 
@@ -339,6 +420,8 @@ javac编译器看到注解，就会去做相应的动作。
          注意：这个阶段，程序可以通过反射访问生命周期到内存字节码阶段的注解。
 
  
+
+
 
 
 
@@ -487,13 +570,21 @@ AOP:使用很简单。@Aspect(切面)+@Pointcut(切入点)+@Before(配置前置�
 
 从上面单例bean的初始化可以知道：循环依赖主要发生在第一、二步，也就是构造器循环依赖和field循环依赖。那么我们要解决循环引用也应该从初始化过程着手，对于单例来说，在Spring容器整个生命周期内，有且只有一个对象，所以很容易想到这个对象应该存在Cache中，Spring为了解决单例的循环依赖问题，使用了**三级缓存**。
 
-这三级缓存分别指： 
+#### 这三级缓存分别指： 
 
-singletonFactories ： 单例对象工厂的cache 
+第一级缓存：singletonObjects，存放经过初始化后的bean。当通过名字获取bean的时候，如果这个名字对应的bean在第一级缓存中，则直接从第一级缓存中获取返回，这样就不会导致多次创建bean了。(完整的bean)
+第二级缓存：earlySingletonObjects，存放不完整的bean，对象就是最终的对象，但是对象的属性可能不完整。当填充依赖对象的时候，先从一级二级缓存中查找，如果找到了，则直接拿出来赋值。如果没找到，则使用三级缓存创建，然后放入到二级缓存中。(残缺的bean)
+场景：A依赖B和C，B依赖A，C依赖A。A填充B的时候要构造B，然后填充B的时候需要A，所以B就从一级二级缓存中查找A，没找到，就使用三级缓存创建最终的A填充到B的A属性。A填充C的时候要构造C，然后填充C的时候需要A，所以C就从一级二级缓存中查找A，找到了，直接填充。
+第三级缓存：singletonFactories，存放bean对应的工厂对象，主要得到根据原始对象进行AOP之后的代理对象。在bean实例化之后就将生成最终对象的ObjectFactory对象放入到三级缓存中，当从二级缓存中获取不到对象的时候，就根据这个ObjectFactory生成最终对象。
+(bean的工厂对象，用来生成二级缓存的的实例对象)
 
-earlySingletonObjects ：提前暴光的单例对象的Cache 
+## 思考
 
-singletonObjects：单例对象的cache
+其实一级缓存放残缺的bean也可以，但是呢，如果并发访问，就可能拿到残缺的bean去处理，则可能出现异常，所以需要二级缓存。
+
+那为啥需要三级缓存，是因为很多类不一定就是简单的类，可能就是会用到AOP的代理类，那么spring为了优雅处理，则统一类的生成方式，使用三级缓存的工厂对象去实例化。
+
+
 
 ​	在创建bean的时候，首先想到的是从cache中获取这个单例的bean，这个缓存就是singletonObjects。如果获取不到，并且对象正在创建中，就再从二级缓存earlySingletonObjects中获取。如果还是获取不到且允许singletonFactories通过getObject()获取，就从三级缓存singletonFactory.getObject()(三级缓存)获取，如果获取到了则：从singletonFactories中移除，并放入earlySingletonObjects中。其实也就是从三级缓存移动到了二级缓存。
 
@@ -711,7 +802,7 @@ spring bean 容器的生命周期流程如下：
 
 
 
-#### **有哪些不同类型的IOC（依赖注入）方式？**
+#### **有哪些不同类型的DI依赖注入）方式？**
 
 - **构造器依赖注入：**构造器依赖注入通过容器触发一个类的构造器来实现的，该类有一系列参数，每个参数代表一个对其他类的依赖。
 - **Setter方法注入：**Setter方法注入是容器通过调用无参构造器或无参static工厂 方法实例化bean之后，调用该bean的setter方法，即实现了基于setter的依赖注入。

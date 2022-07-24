@@ -1,3 +1,5 @@
+[TOC]
+
 #### 影响一个系统性能的因素非常多(代码，数据结构+算法，web容器)，JVM是最后优化的手段。
 
 ## 常用性能测试指标
@@ -379,3 +381,47 @@ jps [options] [hostid]
 11. 在 dump 文析结果中查找存在大量的对象，再查对其的引用。
 
     基本上就可以定位到代码层的逻辑了。
+
+
+
+### 频繁 GC问题(jstat -gc pid 1000)
+
+![image-20210913110332902](../../../Library/Application Support/typora-user-images/image-20210913110332902.png)
+
+使用 jstat -gc pid 1000 命令来对 GC 分代变化情况进行观察，1000 表示采样间隔（ms），S0C/S1C、S0U/S1U、EC/EU、OC/OU、MC/MU 分别代表两个 Survivor 区、Eden 区、老年代、元数据区的容量和使用量。
+
+YGC/YGT、FGC/FGCT、GCT 则代表 YoungGc、FullGc 的耗时和次数以及总耗时。
+
+**不方便阅读，如果拿到了gc日志，可以放在网站可视化，或者本身就有可视化工具也行。**
+
+**①youngGC 过频繁**
+
+youngGC 频繁一般是短周期小对象较多，先考虑是不是 Eden 区/新生代设置的太小了，看能否通过调整 -Xmn、-XX:SurvivorRatio 等参数设置来解决问题。
+
+如果参数正常，但是 youngGC 频率还是太高，就需要使用 Jmap 和 MAT 对 dump 文件进行进一步排查了。
+
+**②youngGC 耗时过长(主要是分析gc各个阶段耗时情况)**
+
+耗时过长问题就要看 GC 日志里耗时耗在哪一块了。以 G1 日志为例，可以关注 Root Scanning、Object Copy、Ref Proc 等阶段。
+
+Ref Proc 耗时长，就要注意引用相关的对象。Root Scanning 耗时长，就要注意线程数、跨代引用。
+
+Object Copy 则需要关注对象生存周期。而且耗时分析它需要横向比较，就是和其他项目或者正常时间段的耗时比较。
+
+③**触发 Full GC**
+
+触发 Full GC 了一般都会有问题，G1 会退化使用 Serial 收集器来完成垃圾的清理工作，暂停时长达到秒级别，可以说是半跪了。
+
+FullGC 的原因可能包括以下这些，以及参数调整方面的一些思路：
+
+- **并发阶段失败：**在并发标记阶段，MixGC 之前老年代就被填满了，那么这时候 G1 就会放弃标记周期。
+
+  这种情况，可能就需要增加堆大小，或者调整并发标记线程数 -XX:ConcGCThreads。
+
+- **晋升失败：**在 GC 的时候没有足够的内存供存活/晋升对象使用，所以触发了 Full GC。
+
+  这时候可以通过 -XX:G1ReservePercent 来增加预留内存百分比，减少 -XX:InitiatingHeapOccupancyPercent 来提前启动标记，-XX:ConcGCThreads 来增加标记线程数也是可以的。
+
+- **大对象分配失败：**大对象找不到合适的 Region 空间进行分配，就会进行 Full GC，这种情况下可以增大内存或者增大 -XX:G1HeapRegionSize。
+
+- **程序主动执行 System.gc()：**不要随便写就对了。

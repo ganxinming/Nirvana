@@ -77,6 +77,16 @@ Mybatis ==仅支持 association 关联对象和 collection 关联集合对象的
 
 (1.CGLIB代理对象，调用对象时为null，才会执行sql进行加载)
 
+
+
+#### jdk代理：实现mapper接口代理
+
+#### cglib代理：实现延迟加载
+
+
+
+
+
 # 为什么说 Mybatis 是半自动 ORM 映射工具？它与全自动的区别在哪里？
 
 Hibernate 属于全自动 ORM 映射工具，使用 Hibernate 查询关联对象或者关联集合对象时，可以根据对象关系模型直接获取，所以它是全自动的。而 Mybatis在查询关联对象或关联集合对象时，需要手动编写 sql 来完成，所以，称之为半自动 ORM 映射工具。
@@ -149,3 +159,7 @@ Hibernate 属于全自动 ORM 映射工具，使用 Hibernate 查询关联对象
 分页插件拦截器PageHelper，调用了startPage后，他会通过PageInterceptor对其后的第一个执行sql进行拦截拼接上limit语句。
 
 (其实也是通过拦截器，去拦截sql并进行修改sql)
+
+
+
+## 感觉好多事都是基于拦截器处理

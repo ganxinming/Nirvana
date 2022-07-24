@@ -6,7 +6,21 @@ API：给消费者调用。SPI：给服务者提供接口，用户可以自定�
 
 SPI：破坏了双亲委派机制。例如：利用spi加载jdbc的**java.sql.Driver**，保证各个sql厂家实现自己的类。SLFJ等，兼容各种日志。
 
-Bootstrap Classloader(只拿些rt.jar下的Stirng,Math等类)加载器拿到了Application ClassLoader加载器应该加载的类，就打破了双亲委派模型。(原本先让父类进行加载，父类本来也没有，才能被子类加载，现在通过SPI，直接在Bootstrap Classloader加载到JVM，这有个问题，如何在父加载器加载的类中，去调用子加载器去加载类？jdk提供了两种方式，Thread.currentThread().getContextClassLoader()和ClassLoader.getSystemClassLoader()一般都指向AppClassLoader，他们能加载classpath中的类
+##### 为啥加载数据库驱动需要SPI？
+
+比如 java.sql.DriverManager/java.sq.Driver 等是 jre 核心内部类，在 $JAVA_HOME/jre/lib/rt.jar 中，==由 bootstrap classloader 负责加载他们；而 jdbc 实现类如 oracle.jdbc.driver.OracleDriver 是在程序运行时指定的类加载路径下的某个 jar 包中（类加载路径是通过环境变量 classpath 动态指定的），由 application class loader 负责加载他们==；所以当 bootstrap classloader 加载的 java.sql.DriverManager， 需要调用 application classloader 加载的 java.sq.Driver 的具体实现类 oracle.jdbc.driver.OracleDriver 时，由于类的可见性 （子类加载器加载的类对父类加载器加载的类默认不可见），按照双亲委派模型，这是不 work 的；
+
+
+
+
+
+Bootstrap Classloader(只拿些rt.jar下的Stirng,Math等类)加载器拿到了Application ClassLoader加载器应该加载的类，就打破了双亲委派模型。(原本先让父类进行加载，父类本来也没有，才能被子类加载，现在通过SPI，直接在Bootstrap Classloader加载到JVM，这有个问题，如何在父加载器加载的类中，去调用子加载器去加载类？jdk提供了两种方式，Thread.currentThread().getContextClassLoader()和ClassLoader.getSystemClassLoader()一般都指向AppClassLoader，他们能加载classpath中的类。
+
+其次线程的 contextClassLoader 是从父线程那里继承过来的，所谓父线程就是创建了当前线程的线程。程序启动时的 main 线程的 contextClassLoader 就是 AppClassLoader。这意味着如果没有人工去设置，那么所有的线程的 contextClassLoader 都是 AppClassLoader。
+
+
+
+
 SPI则用Thread.currentThread().getContextClassLoader()来加载实现类，实现在核心包里的基础类调用用户代码)
 
 (说白了在父加载器通过调用子加载器加载。)

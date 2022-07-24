@@ -20,6 +20,14 @@ Redis 完全基于内存，绝⼤部分请求是纯粹的内存操作，执⾏�
 
 时间复杂度为 O(1)
 
+# Redis执行流程
+
+<img src="../../../Library/Application Support/typora-user-images/image-20220704105343413.png" alt="image-20220704105343413" style="zoom:33%;" />
+
+
+
+当用户输入一条命令之后，==客户端会以 socket 的方式把数据转换成 Redis 协议==，并发送至服务器端，服务器端在接受到数据之后，会先将协议转换为真正的执行命令，在经过各种验证以保证命令能够正确并安全的执行，但验证处理完之后，会调用具体的方法执行此条命令，执行完成之后会进行相关的统计和记录，然后再把执行结果返回给客户端，整个执行流程
+
 # Redis的数据结构 
 
 Redis⽀持多种不同的数据结构，包括5种基础数据结构和⼏种⽐较复杂的数据，这些数据结构可以满⾜不同的应⽤场景。 
@@ -68,11 +76,21 @@ Redis6.0引入的多线程部分，实际上只是用来处理网络数据的读
 
 ## IO多路复用
 
+==“多路”指的是多个网络连接，“复用”指的是复用同一个线程==
+
 1.网络交互，其实就是两个socket进行交互。通信时，一个应用程序将数据写入Socket，然后通过网卡把数据发送到另外一个应用程序的Socket中。
 
 2.一般网络通信，涉及数据读取操作，都会有内核和用户空间复制的情况。Linux区分了内核空间和用户空间。可以这样理解，内核空间运行操作系统程序和驱动程序，用户空间运行应用程序。Linux以这种方式隔离了操作系统程序和应用程序，避免了应用程序影响到操作系统自身的稳定性。(1.不会因为应用程序的问题而影响系统2.控制权限，不能随便篡改数据)
 
 3.**I/O多路复用，I/O就是指的我们网络I/O,多路指多个TCP连接(或多个Channel)，复用指复用一个或少量线程。串起来理解就是很多个网络I/O复用一个或少量的线程来处理这些连接。然后维持这些多个channel的列表，去监视他们是否有读写操作。**
+
+
+
+
+
+<img src="../../../Library/Application Support/typora-user-images/image-20220704105236061.png" alt="image-20220704105236061" style="zoom: 33%;" />
+
+
 
 ## 常用命令
 
@@ -180,17 +198,90 @@ type test
 
 ##### 从 Redis 2.6.12 版本开始，我们就可以使⽤ Set 操作，将 SETNX 和 EXPIRE 融合在⼀起执⾏，具体做法如下： 
 
-EX sseeccoonndd：：设置键的过期时间为 Second 秒。 
+EX ：：设置键的过期时间为 Second 秒。 
 
-PX mmiilllliisseeccoonndd：：设置键的过期时间为 MilliSecond 毫秒。 
+PX ：设置键的过期时间为 MilliSecond 毫秒。 
 
 NX：：只在键不存在时，才对键进⾏设置操作。 
 
-XXXX：：只在键已经存在时，才对键进⾏设置操作。 
+XX：只在键已经存在时，才对键进⾏设置操作。 
 
 SET KEY value [EX seconds] [PX milliseconds] [NX|XX] 
 
 (所以新版本只需要SET就行，但是需要指定NX,EX)
+
+
+
+# Redis分布式锁
+
+### redis命令： setnx
+
+如果为空就set值，并返回1
+
+如果存在(不为空)不进行操作，并返回0
+
+很明显，比get和set要好。因为先判断get，再set的用法，有可能会重复set值。
+
+
+
+```
+redis> SETNX mykey "Hello"
+(integer) 1
+redis> SETNX mykey "World"
+(integer) 0
+redis> GET mykey
+"Hello"
+```
+
+
+
+### javaAPI：**setIfAbsent()**
+
+```
+						//不存在，就加锁，返回一个Boolean，true 加锁成功,记得设置超时时间，防止别的线程挂了，锁释放不了
+            Boolean flag = redisTemplate.opsForValue().setIfAbsent("Mylock", value,10L, TimeUnit.SECONDS);
+            if (!flag) {
+                return "抢锁失败，请再次重试！！";
+            }	
+            String result = redisTemplate.opsForValue().get("goods:001");//get key==看看库存的数量够不够
+						//建议在finally中写
+						finally {
+						redisTemplate.delete("Mylock");//解锁
+						}
+```
+
+问题1：A线程执行加锁，执行时间超过了锁的有效期，此时B加锁，而A又结束，把B的锁释放了。释放前进行判断
+
+```
+finally {
+            if (redisTemplate.opsForValue().get(REDIS_LOCK).equalsIgnoreCase(value)) {
+                redisTemplate.delete("Mylock");//解锁
+            }
+```
+
+问题2：但是这种解锁也是有问题，不是一个原子操作。
+
+==Lua脚本进行解决删锁问题（redis官网推荐）==
+
+```
+finally {
+            Jedis jedis = RedisUtils.getJedis();
+            String script = "if redis.call('get', KEYS[1]) == ARGV[1]" + "then "
+                    + "return redis.call('del', KEYS[1])" + "else " + "  return 0 " + "end";
+            try {
+                Object o = jedis.eval(script, Collections.singletonList(REDIS_LOCK), Collections.singletonList(value));//传入redis的key和value
+                if ("1".equalsIgnoreCase(o.toString())) {//删除成功就是1
+                    System.out.println("-----del redis lock ok");
+                } else {
+                    System.out.println("----del redis lock error");
+                }
+            } finally {
+                if (null != jedis) {
+                    jedis.close();//释放jedis
+                }
+```
+
+
 
 # 实现队列
 
@@ -216,9 +307,13 @@ SET KEY value [EX seconds] [PX milliseconds] [NX|XX]
 
 持久化，即将数据持久存储，⽽不因断电或其他各种复杂外部环境影响数据的完整性。 
 
-Redis ⽬前有两种持久化⽅式，即 RDB 和 AOF，RDB 是通过保存某个时间点的全量数据快照实现数据的持久化，当恢复数 
+Redis 持久化拥有以下三种方式：
 
-据时，直接通过 RDB ⽂件中的快照，将数据恢复。 RRDDBB（（快快照照）持持久久化化 
+- **快照方式**（RDB, Redis DataBase）将某一个时刻的内存数据，以二进制的方式写入磁盘；
+- **文件追加方式**（AOF, Append Only File），记录所有的操作命令，并以文本的形式追加到文件中；
+- **混合持久化方式**，Redis 4.0 之后新增的方式，混合持久化是结合了 RDB 和 AOF 的优点，在写入的时候，先把当前的数据以 RDB 的形式写入文件的开头，再将后续的操作命令以 AOF 的格式存入文件，这样既能保证 Redis 重启时的速度，又能减低数据丢失的风险。
+
+Redis ⽬前有两种持久化⽅式，即 RDB 和 AOF，RDB 是通过保存某个时间点的全量数据快照实现数据的持久化，当恢复数 
 
 RDB持久化会在某个特定的间隔保存那个时间点的全量数据的快照。 
 
@@ -240,6 +335,12 @@ stop-writes-on-bgsave-error yes
 主进程就停⽌进⾏接受新的写⼊操作，这样是为了保护持久化的数据⼀致性的问题。 
 ```
 
+
+
+## 手动触发
+
+**==手动触发持久化的操作有两个： `save` 和 `bgsave` ，它们主要区别体现在：是否阻塞 Redis 主线程的执行。==**
+
 SAVE：：阻塞 Redis 的服务器进程，直到 RDB ⽂件被创建完毕。SAVE 命令很少被使⽤，因为其会阻塞主线程来保证快照的 
 
 写⼊，由于 Redis 是使⽤⼀个主线程来接收所有客⼾端请求，这样会阻塞所有客⼾端请求。 
@@ -250,7 +351,15 @@ SAVE：：阻塞 Redis 的服务器进程，直到 RDB ⽂件被创建完毕。S
 
 ==(但是实际上还是使用BGSAVE命令，去创建RDB文件，因为他是子进程去创建，不影响服务进程)==
 
-### ⾃动化触发RDB持久化的⽅式如下(即触发RDB同步)： 
+<img src="../../../Library/Application Support/typora-user-images/image-20220704113048037.png" alt="image-20220704113048037" style="zoom: 50%;" />
+
+
+
+
+
+### ⾃动化触发
+
+### RDB持久化的⽅式如下(即触发RDB同步)： 
 
 根据 redis.conf 配置⾥的 SAVE m n 定时触发（实际上使⽤的是 BGSAVE）。 (配置文件)
 
@@ -606,3 +715,11 @@ Redis集群引入了哈希槽，一共有哦16384个哈希槽，集群每个节�
 　　延迟计算公式：**DELAY = 500ms + random(0 ~ 500ms) + SLAVE_RANK \* 1000ms**
 
 　　SLAVE_RANK：表示此slave已经从master复制数据的总量的rank。Rank越小代表已复制的数据越新。这种方式下，持有最新数据的slave将会首先发起选举（理论上）
+
+
+
+# **Pipeline**
+
+管道（pipeline）可以一次性发送多条命令并在执行完后一次性将结果返回，pipeline 通过减少客户端与 redis 的通信次数来实现降低往返延时时间，而且 Pipeline 实现的原理是队列，而队列的原理是时先进先出，这样就保证数据的顺序性。
+
+通俗点：pipeline就是把一组命令进行打包，然后一次性通过网络发送到Redis。同时将执行的结果批量的返回回来。
